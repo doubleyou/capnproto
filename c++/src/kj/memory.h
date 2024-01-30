@@ -22,6 +22,7 @@
 #pragma once
 
 #include "common.h"
+#include <cstdint>
 
 KJ_BEGIN_HEADER
 
@@ -654,6 +655,275 @@ private:
   union {
     T value;
   };
+};
+
+#define KJ_ASSERT_PIN_PTRS
+// Generates additional assertions for Pin/Ptr lifecycle consistency.
+
+template <typename T>
+class Ptr;
+
+// =======================================================================================
+// Pin<T>
+
+template <typename T>
+class Pin {
+  // Pin<T> holds T value with a promise that it won't be moved.
+  //
+  // Pin<T> can be dereferenced to obtain a raw pointer smart wrapper Ptr<T>.
+  // The benefit of using Pin<T>/Ptr<T> combination rather than T/&T comes from 
+  // KJ_ASSERT_PIN_PTRS enabled assertions. These verify that no Ptr<T> exist
+  // when Pin<T> is being destroyed.
+
+public:
+  inline ~Pin() {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(ptrs == 0, "Pin with active references destroyed");
+#endif
+  }
+
+  inline T* operator->() { return get(); }
+  inline const T* operator->() const { return get(); }
+
+  inline Ptr<T> operator*() { return Ptr<T>(this); }
+
+private:
+  KJ_DISALLOW_COPY_AND_MOVE(Pin);
+  
+  inline Pin(T&& t): t(kj::mv(t)) {}
+
+  T t;
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+  uint64_t ptrs = 0;
+#endif
+
+  inline T* get() { return &t; }
+  inline const T* get() const { return &t; }
+
+  template <typename X, typename... Params>
+  friend Pin<X> pin(Params&&... params);
+
+  template <typename X>
+  friend class Ptr;
+};
+
+template <typename T, typename... Params>
+inline Pin<T> pin(Params&&... params) {
+  return Pin<T>(T(kj::fwd<Params>(params)...));
+}
+
+template <typename T>
+class Pin<kj::Own<T>> {
+  // Pin<kj::Own<T>> represent fully owned (and also pinned) object on the heap.
+  // It still hands out Ptr<T> with the same guarantees, which makes it possible to
+  // use smart safe pointers independent of T's location.
+
+public:
+  inline Pin(kj::Own<T>&& t): t(kj::mv(t)) {}
+
+  inline ~Pin() {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(ptrs == 0, "Pin with active references destroyed");
+#endif
+  }
+
+  inline T* operator->() { return get(); }
+  inline const T* operator->() const { return get(); }
+
+  inline Ptr<T> operator*() { return Ptr<T>(this); }
+
+private:
+  KJ_DISALLOW_COPY_AND_MOVE(Pin);
+  
+  kj::Own<T> t;
+#ifdef KJ_ASSERT_PIN_PTRS  
+  uint64_t ptrs = 0;
+#endif
+
+  inline T* get() { return t.get(); }
+  inline const T* get() const { return t.get(); }
+
+  template <typename X, typename... Params>
+  friend Pin<kj::Own<X>> heapPin(Params&&... params);
+
+  template <typename X>
+  friend class Ptr;
+};
+
+template <typename T, typename... Params>
+inline Pin<kj::Own<T>> heapPin(Params&&... params) {
+  return Pin<kj::Own<T>>(kj::heap<T>(kj::fwd<Params>(params)...));
+}
+
+// =======================================================================================
+// Uniq<T>
+
+template <typename T>
+class Uniq {
+  // Uniq<T> is a weaker version of Pin<T>: you can move it as long as
+  // there are no live Ptr<T> pointing at it.
+
+public:
+  inline Uniq(Uniq<T>&& other): t(kj::mv(other.t)) {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(other.ptrs == 0, "Uniq with active references moved");
+#endif
+  }
+
+  inline ~Uniq() {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(ptrs == 0, "Uniq with active references destroyed");
+#endif
+  }
+
+  inline T* operator->() { return get(); }
+  inline const T* operator->() const { return get(); }
+
+  inline Ptr<T> operator*() { return Ptr<T>(this); }
+
+private:
+  KJ_DISALLOW_COPY(Uniq);
+  
+  inline Uniq(T&& t): t(kj::mv(t)) {}
+
+  T t;
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+  uint64_t ptrs = 0;
+#endif
+
+  inline T* get() { return &t; }
+  inline const T* get() const { return &t; }
+
+  template <typename X, typename... Params>
+  friend Uniq<X> uniq(Params&&... params);
+
+  template <typename X>
+  friend class Ptr;
+};
+
+template <typename T, typename... Params>
+inline Uniq<T> uniq(Params&&... params) {
+  return Uniq<T>(T(kj::fwd<Params>(params)...));
+}
+
+
+template <typename T>
+class Uniq<kj::Own<T>> {
+  // Uniq<kj::Own<T>> represent fully owned objects on the heap.
+
+public:
+  inline Uniq(kj::Own<T>&& t): t(kj::mv(t)) {}
+
+  inline Uniq(Uniq<kj::Own<T>>&& other): t(kj::mv(other.t)) {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(other.ptrs == 0, "Uniq with active references moved");
+#endif
+  }
+
+  inline ~Uniq() {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    KJ_IREQUIRE(ptrs == 0, "Uniq with active references destroyed");
+#endif
+  }
+
+  inline T* operator->() { return get(); }
+  inline const T* operator->() const { return get(); }
+
+  inline Ptr<T> operator*() { return Ptr<T>(this); }
+
+private:
+  KJ_DISALLOW_COPY(Uniq);
+  
+  kj::Own<T> t;
+#ifdef KJ_ASSERT_PIN_PTRS  
+  uint64_t ptrs = 0;
+#endif
+
+  inline T* get() { return t.get(); }
+  inline const T* get() const { return t.get(); }
+
+  template <typename X>
+  friend class Ptr;
+};
+
+// =======================================================================================
+// Ptr<T>
+
+template <typename T>
+class Ptr {
+public:
+  inline ~Ptr() {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    (*ptrs)--;
+#endif
+  }
+
+  inline T* operator->() { return get(); }
+  inline const T* operator->() const { return get(); }
+
+  inline bool operator==(const Pin<T>& other) const { return get() == other.get(); }
+  inline bool operator==(const Pin<kj::Own<T>>& other) const { return get() == other.get(); }
+  inline bool operator==(const Uniq<T>& other) const { return get() == other.get(); }
+  inline bool operator==(const Uniq<kj::Own<T>>& other) const { return get() == other.get(); }
+  inline bool operator==(const Ptr<T>& other) const { return get() == other.get(); }
+
+private:
+  KJ_DISALLOW_COPY(Ptr);
+
+  inline Ptr(Pin<T>* pin) : ptr(pin->get())
+#ifdef KJ_ASSERT_PIN_PTRS  
+  , ptrs(&pin->ptrs) 
+#endif
+  {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    (*ptrs)++;
+#endif    
+  }
+
+  inline Ptr(Pin<kj::Own<T>>* pin) : ptr(pin->get())
+#ifdef KJ_ASSERT_PIN_PTRS  
+  , ptrs(&pin->ptrs)
+#endif
+  {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    (*ptrs)++;
+#endif    
+  }
+
+  inline Ptr(Uniq<T>* uniq) : ptr(uniq->get())
+#ifdef KJ_ASSERT_PIN_PTRS  
+  , ptrs(&uniq->ptrs) 
+#endif
+  {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    (*ptrs)++;
+#endif    
+  }
+
+  inline Ptr(Uniq<kj::Own<T>>* uniq) : ptr(uniq->get())
+#ifdef KJ_ASSERT_PIN_PTRS  
+  , ptrs(&uniq->ptrs)
+#endif
+  {
+#ifdef KJ_ASSERT_PIN_PTRS  
+    (*ptrs)++;
+#endif    
+  }
+
+  T *ptr;
+#ifdef KJ_ASSERT_PIN_PTRS  
+  uint64_t *ptrs;
+#endif  
+
+  inline T* get() { return ptr; }
+  inline const T* get() const { return ptr; }
+
+  template <typename X>
+  friend class Pin;
+  template <typename X>
+  friend class Uniq;
 };
 
 // =======================================================================================

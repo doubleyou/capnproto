@@ -19,7 +19,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+#include "kj/common.h"
+#include "kj/string.h"
+#include "kj/test.h"
 #include "memory.h"
+#include <csignal>
+#include <cstdint>
 #include <kj/compat/gtest.h>
 #include "debug.h"
 
@@ -500,5 +505,214 @@ KJ_TEST("disposeWith") {
 
 // TODO(test):  More tests.
 
-}  // namespace
+struct Obj {
+  Obj(kj::StringPtr name) : name(kj::str(name)) { }
+  Obj(Obj&&) = default;
+
+  kj::String name;
+
+  KJ_DISALLOW_COPY(Obj);
+};
+
+struct PtrHolder {
+  kj::Ptr<Obj> ptr;
+};
+
+KJ_TEST("local kj::Pin<T>") {
+  // create local object pin
+  kj::Pin<Obj> pin = kj::pin<Obj>("a");
+
+  // pin is a smart pointer and can be used so
+  KJ_EXPECT(pin->name == "a"_kj);
+
+  // you will get Ptr<T> if you dereference it
+  kj::Ptr<Obj> ptr1 = *pin;
+  KJ_EXPECT(ptr1 == pin);
+  KJ_EXPECT(pin == ptr1);
+
+  // Ptr<T> is a smart pointer too
+  KJ_EXPECT(ptr1->name == "a"_kj);
+
+  // you can have more than one Ptr<T>
+  kj::Ptr<Obj> ptr2 = *pin;
+  KJ_EXPECT(ptr1 == ptr2);
+  KJ_EXPECT(ptr2->name == "a"_kj);
+}
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+KJ_TEST("local kj::Pin<T> destroyed with active ptrs") {
+  PtrHolder* holder = nullptr;
+  
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Pin<Obj> localPin = kj::pin<Obj>("a");
+    holder = new PtrHolder { *localPin };
+    KJ_EXPECT(holder->ptr->name == "a"_kj);
+  });
+}
+#endif  
+
+KJ_TEST("heap kj::Pin<T>") {
+  // create heap object pin by surrendering kj::Own
+  kj::Pin<kj::Own<Obj>> pin = kj::heap<Obj>("b");
+
+  // pin is a smart pointer and can be used so
+  KJ_EXPECT(pin->name == "b"_kj);
+
+  // you will still get Ptr<T> if you dereference it
+  kj::Ptr<Obj> ptr1 = *pin;
+  KJ_EXPECT(ptr1 == pin);
+  KJ_EXPECT(pin == ptr1);
+
+  // you can have more than one Ptr<T>
+  kj::Ptr<Obj> ptr2 = *pin;
+  KJ_EXPECT(ptr1 == ptr2);
+  KJ_EXPECT(ptr2->name == "b"_kj);
+}
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+KJ_TEST("heap kj::Pin<T> destroyed with active ptrs") {
+  PtrHolder* holder = nullptr;
+  
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Pin<kj::Own<Obj>> localPin = kj::heap<Obj>("b");
+    holder = new PtrHolder { *localPin };
+    KJ_EXPECT(holder->ptr->name == "b"_kj);
+  });
+}
+#endif  
+
+KJ_TEST("local kj::Uniq<T>") {
+  // create local object pin
+  kj::Uniq<Obj> uniq = kj::uniq<Obj>("a");
+
+  // pin is a smart pointer and can be used so
+  KJ_EXPECT(uniq->name == "a"_kj);
+
+  // you will get Ptr<T> if you dereference it
+  kj::Ptr<Obj> ptr1 = *uniq;
+  KJ_EXPECT(ptr1 == uniq);
+  KJ_EXPECT(uniq == ptr1);
+
+  // Ptr<T> is a smart pointer too
+  KJ_EXPECT(ptr1->name == "a"_kj);
+
+  // you can have more than one Ptr<T>
+  kj::Ptr<Obj> ptr2 = *uniq;
+  KJ_EXPECT(ptr1 == ptr2);
+  KJ_EXPECT(ptr2->name == "a"_kj);
+}
+
+KJ_TEST("moving local kj::Uniq<T>") {
+  kj::Uniq<Obj> uniq = kj::uniq<Obj>("a");
+
+  // you can move pin around as long as there are no pointers to it
+  kj::Uniq<Obj> uniq2(kj::mv(uniq));
+  
+  // data belongs to new pin now
+  KJ_EXPECT(uniq2->name == "a"_kj);
+
+  // it is C++ and old uniq still points to a valid object
+  KJ_EXPECT(uniq->name == ""_kj);
+
+  {
+    // you can add pointers
+    kj::Ptr<Obj> ptr1 = *uniq2;
+    KJ_EXPECT(ptr1->name == "a"_kj);
+
+    kj::Ptr<Obj> ptr2 = *uniq2;
+    KJ_EXPECT(ptr2->name == "a"_kj);
+  }
+
+  // you can move again if all pointers are destroyed
+  kj::Uniq<Obj> uniq3(kj::mv(uniq2));
+  KJ_EXPECT(uniq3->name == "a"_kj);
+}
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+KJ_TEST("local kj::Uniq<T> destroyed with active ptrs") {
+  PtrHolder* holder = nullptr;
+  
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Uniq<Obj> obj = kj::uniq<Obj>("b");
+    holder = new PtrHolder { *obj };
+    KJ_EXPECT(holder->ptr->name == "b"_kj);
+  });
+}
+
+KJ_TEST("local kj::Uniq<T> moved with active ptrs") {
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Uniq<Obj> obj = kj::uniq<Obj>("b");
+    auto ptr = *obj;
+    kj::Uniq<Obj> obj2(kj::mv(obj));
+  });
+}
+#endif  
+
+
+KJ_TEST("heap kj::Uniq<T>") {
+  // create heap object pin
+  kj::Uniq<kj::Own<Obj>> uniq = kj::heap<Obj>("a");
+
+  // pin is a smart pointer and can be used so
+  KJ_EXPECT(uniq->name == "a"_kj);
+
+  // you will get Ptr<T> if you dereference it
+  kj::Ptr<Obj> ptr1 = *uniq;
+  KJ_EXPECT(ptr1 == uniq);
+  KJ_EXPECT(uniq == ptr1);
+
+  // Ptr<T> is a smart pointer too
+  KJ_EXPECT(ptr1->name == "a"_kj);
+
+  // you can have more than one Ptr<T>
+  kj::Ptr<Obj> ptr2 = *uniq;
+  KJ_EXPECT(ptr1 == ptr2);
+  KJ_EXPECT(ptr2->name == "a"_kj);
+}
+
+KJ_TEST("moving heap kj::Uniq<T>") {
+  kj::Uniq<kj::Own<Obj>> uniq = kj::heap<Obj>("a");
+
+  // you can move pin around as long as there are no pointers to it
+  kj::Uniq<kj::Own<Obj>> uniq2(kj::mv(uniq));
+  
+  // data belongs to new pin now
+  KJ_EXPECT(uniq2->name == "a"_kj);
+
+  {
+    // you can add pointers
+    kj::Ptr<Obj> ptr1 = *uniq2;
+    KJ_EXPECT(ptr1->name == "a"_kj);
+
+    kj::Ptr<Obj> ptr2 = *uniq2;
+    KJ_EXPECT(ptr2->name == "a"_kj);
+  }
+
+  // you can move again if all pointers are destroyed
+  kj::Uniq<kj::Own<Obj>> uniq3(kj::mv(uniq2));
+  KJ_EXPECT(uniq3->name == "a"_kj);
+}
+
+#ifdef KJ_ASSERT_PIN_PTRS  
+KJ_TEST("heap kj::Uniq<T> destroyed with active ptrs") {
+  PtrHolder* holder = nullptr;
+  
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Uniq<kj::Own<Obj>> obj = kj::heap<Obj>("b");
+    holder = new PtrHolder { *obj };
+    KJ_EXPECT(holder->ptr->name == "b"_kj);
+  });
+}
+
+KJ_TEST("heap kj::Uniq<T> moved with active ptrs") {
+  KJ_EXPECT_SIGNAL(SIGABRT, {
+    kj::Uniq<kj::Own<Obj>> obj = kj::heap<Obj>("b");
+    auto ptr = *obj;
+    kj::Uniq<kj::Own<Obj>> obj2(kj::mv(obj));
+  });
+}
+#endif  
+
+} // namespace 
+
 }  // namespace kj
